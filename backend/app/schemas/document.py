@@ -18,3 +18,18 @@ class ParsedDocument(BaseModel):
     total_pages: Optional[int] = Field(None, description="Total pages if applicable.")
     raw_text: str = Field("", description="Full concatenated text.")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional document metadata.")
+
+class DocumentChunk(BaseModel):
+    """A granular chunk/node ready for embedding, vector storage, and citation attribution."""
+    chunk_id: str = Field(..., description="Unique chunk UUID.")
+    doc_id: str = Field(..., description="Parent document UUID.")
+    filename: str = Field(..., description="Document filename.")
+    source_type: str = Field(..., description="Source type: pdf, docx, txt, web.")
+    source_url: Optional[str] = Field(None, description="Source URL for web documents.")
+    page_number: Optional[int] = Field(None, description="1-indexed page number (crucial for PDFs).")
+    section_title: Optional[str] = Field(None, description="Associated section or chapter title.")
+    text: str = Field(..., description="Text content of the chunk.")
+    char_start: int = Field(0, description="Start character offset within section/document.")
+    char_end: int = Field(0, description="End character offset within section/document.")
+    chunk_index: int = Field(0, description="Sequential index of the chunk within the document.")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata payload.")
