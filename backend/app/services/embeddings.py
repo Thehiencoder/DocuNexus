@@ -80,12 +80,17 @@ class EmbeddingService:
         return self._generate_fallback_dense(text, dim=settings.EMBEDDING_DIM)
 
     def _generate_fallback_dense(self, text: str, dim: int = 768) -> List[float]:
-        """Generates a normalized deterministic float vector from text hash."""
-        h = hashlib.sha256(text.encode("utf-8")).digest()
-        raw = []
-        for i in range(dim):
-            byte_val = h[i % len(h)]
-            raw.append(((byte_val / 255.0) * 2.0) - 1.0)
+        """Generates a normalized deterministic float vector using word-level hashing (CBOW-style)."""
+        words = text.lower().split()
+        if not words:
+            words = ["empty"]
+        raw = [0.0] * dim
+        for w in words:
+            h = hashlib.sha256(w.encode("utf-8")).digest()
+            for i in range(dim):
+                byte_val = h[i % len(h)]
+                val = ((byte_val / 255.0) * 2.0) - 1.0
+                raw[i] += val
         norm = sum(x * x for x in raw) ** 0.5 or 1.0
         return [round(x / norm, 6) for x in raw]
 
