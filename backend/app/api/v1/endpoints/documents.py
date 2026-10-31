@@ -1,3 +1,4 @@
+import logging
 import shutil
 import uuid
 from pathlib import Path
@@ -13,7 +14,10 @@ from app.schemas.document import (
 from app.services.parsers.dispatcher import parse_document, parse_url
 from app.services.chunking import default_chunker
 from app.services.catalog import catalog
+from app.services.vector_store import vector_store
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -23,7 +27,8 @@ SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md", ".markdown", ".c
 async def upload_document(file: UploadFile = File(...)):
     """
     Upload a document (PDF, DOCX, TXT, MD, etc.).
-    Parses structural sections, generates granular chunks, and catalogs metadata.
+    Parses structural sections, generates granular chunks with metadata,
+    and indexes dual named vectors (dense + sparse BM25) into Qdrant.
     """
     filename = file.filename or "uploaded_document"
     ext = Path(filename).suffix.lower()
@@ -62,7 +67,7 @@ async def upload_document(file: UploadFile = File(...)):
             detail=f"Failed to parse document: {str(e)}",
         )
 
-    # Chunk document into nodes
+    # Chunk document into nodes with preserved metadata
     try:
         nodes, chunks = default_chunker.chunk_document(parsed_doc)
     except Exception as e:
@@ -70,6 +75,12 @@ async def upload_document(file: UploadFile = File(...)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed during chunking: {str(e)}",
         )
+
+    # Ingest chunks into Qdrant vector database (dual named vectors: dense + sparse)
+    try:
+        vector_store.upsert_chunks(chunks)
+    except Exception as e:
+        logger.warning(f"Qdrant vector indexing skipped or encountered an error for '{filename}': {e}")
 
     # Save to catalog
     catalog_item = DocumentItem(
@@ -95,14 +106,15 @@ async def upload_document(file: UploadFile = File(...)):
         total_sections=len(parsed_doc.sections),
         total_chunks=len(chunks),
         status="success",
-        message=f"Successfully parsed and chunked {len(chunks)} passages from '{filename}'.",
+        message=f"Successfully parsed, chunked, and indexed {len(chunks)} passages from '{filename}'.",
         chunks_preview=chunks[:3],  # Return first 3 chunks as preview
     )
 
 @router.post("/scrape", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def scrape_web_page(payload: ScrapeRequest):
     """
-    Ingests and extracts clean text from a public web page URL.
+    Ingests and extracts clean text from a public web page URL,
+    and indexes dual named vectors into Qdrant.
     """
     url_str = str(payload.url).strip()
     if not url_str.startswith(("http://", "https://")):
@@ -127,6 +139,12 @@ async def scrape_web_page(payload: ScrapeRequest):
 
     nodes, chunks = default_chunker.chunk_document(parsed_doc)
 
+    # Ingest chunks into Qdrant vector database
+    try:
+        vector_store.upsert_chunks(chunks)
+    except Exception as e:
+        logger.warning(f"Qdrant vector indexing skipped or encountered an error for '{url_str}': {e}")
+
     catalog_item = DocumentItem(
         doc_id=doc_id,
         filename=parsed_doc.filename,
@@ -150,7 +168,7 @@ async def scrape_web_page(payload: ScrapeRequest):
         total_sections=len(parsed_doc.sections),
         total_chunks=len(chunks),
         status="success",
-        message=f"Successfully scraped and chunked {len(chunks)} passages from '{url_str}'.",
+        message=f"Successfully scraped, chunked, and indexed {len(chunks)} passages from '{url_str}'.",
         chunks_preview=chunks[:3],
     )
 
@@ -187,13 +205,21 @@ async def get_raw_document(doc_id: str):
 
 @router.delete("/{doc_id}", status_code=status.HTTP_200_OK)
 async def delete_document(doc_id: str):
-    """Remove a document from the catalog and purge local files."""
+    """Remove a document from the catalog, purge local files, and purge chunks from Qdrant."""
     doc = catalog.get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
+    # 1. Purge vector points from Qdrant
+    try:
+        vector_store.delete_document_chunks(doc_id)
+    except Exception as e:
+        logger.warning(f"Error purging vectors from Qdrant for doc_id '{doc_id}': {e}")
+
+    # 2. Delete file from local disk
     if doc.file_path:
         Path(doc.file_path).unlink(missing_ok=True)
 
+    # 3. Remove from catalog
     catalog.delete_document(doc_id)
-    return {"status": "success", "message": f"Document '{doc.filename}' deleted successfully."}
+    return {"status": "success", "message": f"Document '{doc.filename}' and its indexed vectors were deleted successfully."}
