@@ -1,6 +1,12 @@
 from fastapi import APIRouter
-from app.schemas.query import HybridSearchRequest, HybridSearchResponse
+from app.schemas.query import (
+    HybridSearchRequest,
+    HybridSearchResponse,
+    RerankRequest,
+    RerankResponse,
+)
 from app.services.retriever import hybrid_retriever
+from app.services.reranker import reranker_service
 
 router = APIRouter(prefix="/query", tags=["Query & Retrieval"])
 
@@ -20,4 +26,31 @@ async def hybrid_search(payload: HybridSearchRequest):
         query=payload.query,
         total_results=len(results),
         results=results,
+    )
+
+@router.post("/rerank", response_model=RerankResponse)
+async def rerank_query(payload: RerankRequest):
+    """
+    Executes hybrid retrieval (candidate pool top_k) followed by Cohere Rerank (rerank-v3.5)
+    to reorder candidates with cross-encoder precision down to top_n high-confidence chunks.
+    """
+    # 1. Retrieve initial candidate pool (e.g. top 25)
+    candidates = hybrid_retriever.search(
+        query=payload.query,
+        top_k=payload.top_k,
+        doc_ids=payload.doc_ids,
+    )
+
+    # 2. Rerank candidates down to top_n (e.g. top 5)
+    reranked = reranker_service.rerank_chunks(
+        query=payload.query,
+        chunks=candidates,
+        top_n=payload.top_n,
+    )
+
+    return RerankResponse(
+        query=payload.query,
+        initial_candidates_count=len(candidates),
+        reranked_count=len(reranked),
+        results=reranked,
     )

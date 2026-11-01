@@ -28,3 +28,17 @@ class HybridSearchResponse(BaseModel):
     query: str
     total_results: int
     results: List[RetrievedChunk]
+
+class RerankRequest(BaseModel):
+    """Payload for hybrid search followed by Cohere reranking."""
+    query: str = Field(..., description="User search query or question.")
+    top_k: int = Field(25, description="Initial candidate pool size retrieved via hybrid search.")
+    top_n: int = Field(5, description="Number of high-precision chunks to retain after Cohere reranking.")
+    doc_ids: Optional[List[str]] = Field(None, description="Optional document ID filters.")
+
+class RerankResponse(BaseModel):
+    """Response containing Cohere reranked chunks with relevance scores."""
+    query: str
+    initial_candidates_count: int
+    reranked_count: int
+    results: List[RetrievedChunk]
